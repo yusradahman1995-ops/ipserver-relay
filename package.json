@@ -1,0 +1,16 @@
+{
+  "name": "ipserver-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "In-memory MJPEG relay for IPServer Remote. No accounts, no disk storage.",
+  "main": "relay.js",
+  "scripts": {
+    "start": "node relay.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}
