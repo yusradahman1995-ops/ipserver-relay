@@ -20,6 +20,7 @@ const MAX_DEVICES = parseInt(process.env.MAX_DEVICES || '500', 10);
 const MAX_VIEWERS = parseInt(process.env.MAX_VIEWERS || '8', 10);
 const MAX_FRAME = parseInt(process.env.MAX_FRAME_BYTES || String(1024 * 1024), 10);
 const DEVICE_IDLE_MS = parseInt(process.env.DEVICE_IDLE_MS || '90000', 10);
+const VIEW_PASSWORD = process.env.VIEW_PASSWORD || '25262728';
 const ID_RE = /^[0-9A-Za-z]{8}$/;
 
 /** @typedef {{ ws: import('ws').WebSocket, pinHash: string|null, name: string, viewers: Set<import('ws').WebSocket>, lastFrame: Buffer|null, lastSeen: number, authed: Set<import('ws').WebSocket> }} Device */
@@ -95,11 +96,21 @@ button.ghost{background:#263238}
 #btn_off{background:#ff1744}
 .btns button:disabled{opacity:.35;cursor:default}
 .pin{margin:24px auto;max-width:280px;background:#1a1a2e;padding:20px;border-radius:16px;text-align:center}
-.pin input{width:100%;margin:12px 0;padding:10px;font-size:22px;text-align:center;border-radius:10px;border:1px solid #2a2a4a;background:#12122a;color:#eee;letter-spacing:8px}
+.pin input{width:100%;margin:12px 0;padding:10px;font-size:22px;text-align:center;border-radius:10px;border:1px solid #2a2a4a;background:#12122a;color:#eee;letter-spacing:4px}
+.pin button{width:100%;border:0;border-radius:28px;padding:14px;font-size:16px;font-weight:700;background:#00c853;color:#fff;cursor:pointer}
+.pin .sub{margin-bottom:8px}
+.pin .err{color:#ff5252;font-size:13px;min-height:18px;margin-bottom:8px}
 .wait{padding:40px 16px;text-align:center;color:#9e9e9e}
 </style>
 </head>
 <body>
+<div id="gate" class="pin">
+  <div class="sub">أدخل كلمة السر للمتابعة</div>
+  <div class="err" id="gerr"></div>
+  <input id="gpw" type="password" inputmode="numeric" maxlength="16" autocomplete="off" autofocus/>
+  <button type="button" id="gbtn">دخول</button>
+</div>
+<div id="main" style="display:none">
 <header>
   <div>
     <h1>IPServer Remote</h1>
@@ -111,11 +122,6 @@ button.ghost{background:#263238}
   <button id="btn_on" type="button">تشغيل الكاميرا</button>
   <button id="btn_off" type="button" disabled>إيقاف الكاميرا</button>
 </div>
-<div id="pinbox" class="pin" style="display:none">
-  <div>أدخل رمز PIN</div>
-  <input id="pin" maxlength="4" inputmode="numeric" autocomplete="off"/>
-  <button id="pinbtn">دخول</button>
-</div>
 <div class="stage" id="stage">
   <div class="wait" id="wait">اضغط تشغيل الكاميرا</div>
   <img id="v" alt="stream" style="display:none"/>
@@ -125,21 +131,16 @@ button.ghost{background:#263238}
     <button id="fs">ملء الشاشة</button>
   </div>
 </div>
-<p class="note">البث يمر عبر السرفر الخارجي. للاستخدام الخاص فقط.</p>
+</div>
 <script>
 (function(){
   var ID=${JSON.stringify(safe)};
-  var img=document.getElementById('v');
-  var fpsEl=document.getElementById('fps');
-  var dot=document.getElementById('dot');
-  var st=document.getElementById('st');
-  var wait=document.getElementById('wait');
-  var pinbox=document.getElementById('pinbox');
-  var frames=0, last=Date.now(), ws, pin='', needPin=false, live=false;
-  var btnOn=document.getElementById('btn_on');
-  var btnOff=document.getElementById('btn_off');
-  function setButtons(){ btnOn.disabled=live; btnOff.disabled=!live; }
+  var PASS=${JSON.stringify(VIEW_PASSWORD)};
+  var img, fpsEl, dot, st, wait, btnOn, btnOff;
+  var frames=0, last=Date.now(), ws, live=false, unlocked=false, pw='';
+  function setButtons(){ if(!btnOn) return; btnOn.disabled=live; btnOff.disabled=!live; }
   function setOn(on, msg){
+    if(!dot) return;
     dot.className=on?'dot on':'dot';
     st.textContent=msg || (on?'مباشر':'الكاميرا مطفأة');
   }
@@ -164,20 +165,22 @@ button.ghost{background:#263238}
     ws.binaryType='arraybuffer';
     ws.onopen=function(){
       setOn(false,'متصل بالسرفر…');
-      if(pin) ws.send(JSON.stringify({type:'auth',pin:pin}));
+      ws.send(JSON.stringify({type:'auth',password:pw}));
     };
     ws.onmessage=function(e){
       if(typeof e.data==='string'){
         try{
           var j=JSON.parse(e.data);
-          if(j.type==='need_pin'){
-            needPin=true; pinbox.style.display='block';
-            setOn(false,'مطلوب PIN');
+          if(j.type==='need_password'){
+            setOn(false,'أدخل كلمة السر');
           } else if(j.type==='auth_ok'){
-            pinbox.style.display='none';
             setOn(false,'بانتظار الصورة…');
           } else if(j.type==='auth_fail'){
-            setOn(false,'PIN خاطئ');
+            setOn(false,'كلمة السر غير صحيحة');
+            stopCam();
+            document.getElementById('gate').style.display='block';
+            document.getElementById('main').style.display='none';
+            document.getElementById('gerr').textContent='كلمة السر غير صحيحة';
           } else if(j.type==='waiting'){
             wait.style.display='block'; img.style.display='none';
             setOn(false,'بانتظار الجهاز…');
@@ -210,31 +213,49 @@ button.ghost{background:#263238}
     setButtons();
     try{ if(ws) ws.close(); }catch(e){}
     ws=null;
-    wait.textContent='اضغط تشغيل الكاميرا';
-    wait.style.display='block';
-    img.style.display='none';
-    var prev=img.src;
-    try{ img.removeAttribute('src'); }catch(e){}
-    if(prev && prev.indexOf('blob:')===0){ try{ URL.revokeObjectURL(prev); }catch(e){} }
+    if(wait) wait.textContent='اضغط تشغيل الكاميرا';
+    if(wait) wait.style.display='block';
+    if(img){ img.style.display='none';
+      var prev=img.src;
+      try{ img.removeAttribute('src'); }catch(e){}
+      if(prev && prev.indexOf('blob:')===0){ try{ URL.revokeObjectURL(prev); }catch(e){} }
+    }
     setOn(false);
   }
-  btnOn.onclick=startCam;
-  btnOff.onclick=stopCam;
+  function unlock(){
+    pw=(document.getElementById('gpw').value||'').trim();
+    if(pw!==PASS){
+      document.getElementById('gerr').textContent='كلمة السر غير صحيحة';
+      return;
+    }
+    unlocked=true;
+    document.getElementById('gate').style.display='none';
+    document.getElementById('main').style.display='block';
+    img=document.getElementById('v');
+    fpsEl=document.getElementById('fps');
+    dot=document.getElementById('dot');
+    st=document.getElementById('st');
+    wait=document.getElementById('wait');
+    btnOn=document.getElementById('btn_on');
+    btnOff=document.getElementById('btn_off');
+    btnOn.onclick=startCam;
+    btnOff.onclick=stopCam;
+    document.getElementById('fs').onclick=function(){
+      var el=img;
+      if(el.requestFullscreen) el.requestFullscreen();
+      else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    };
+    setButtons();
+  }
+  document.getElementById('gbtn').onclick=unlock;
+  document.getElementById('gpw').addEventListener('keydown', function(e){
+    if(e.key==='Enter') unlock();
+  });
   window.addEventListener('pagehide', stopCam);
-  document.getElementById('pinbtn').onclick=function(){
-    pin=document.getElementById('pin').value||'';
-    if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'auth',pin:pin}));
-  };
-  document.getElementById('fs').onclick=function(){
-    var el=img;
-    if(el.requestFullscreen) el.requestFullscreen();
-    else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-  };
   setInterval(function(){
     var n=Date.now(), dt=(n-last)/1000;
-    if(dt>=1){ fpsEl.textContent=Math.round(frames/dt); frames=0; last=n; }
+    if(dt>=1){ if(fpsEl) fpsEl.textContent=Math.round(frames/dt); frames=0; last=n; }
   },1000);
-  setButtons();
 })();
 </script>
 </body>
@@ -547,27 +568,27 @@ function onDevice(ws, id, ip) {
 function onViewer(ws, id, ip) {
   log('viewer', id, ip);
   const attach = () => devices.get(id);
+  let unlocked = false;
+
+  sendJson(ws, { type: 'need_password' });
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) return;
     let j;
     try { j = JSON.parse(data.toString()); } catch (_) { return; }
-    if (!j || j.type !== 'auth') return;
-    const dev = attach();
-    if (!dev) return;
-    const pin = String(j.pin || '');
-    if (dev.pinHash && sha256(pin) === dev.pinHash) {
-      dev.authed.add(ws);
+    if (!j || (j.type !== 'auth' && j.type !== 'password')) return;
+    const pass = String(j.password || j.pin || '');
+    if (pass === VIEW_PASSWORD) {
+      unlocked = true;
       sendJson(ws, { type: 'auth_ok' });
-      if (dev.lastFrame && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(dev.lastFrame, { binary: true }); } catch (_) {}
-      }
+      tryJoin();
     } else {
       sendJson(ws, { type: 'auth_fail' });
     }
   });
 
   const tryJoin = () => {
+    if (!unlocked) return;
     const dev = attach();
     if (!dev) {
       sendJson(ws, { type: 'waiting' });
@@ -580,25 +601,21 @@ function onViewer(ws, id, ip) {
     }
     const wasNew = !dev.viewers.has(ws);
     dev.viewers.add(ws);
+    dev.authed.add(ws);
     if (wasNew) wakeViewers(dev);
-    if (dev.pinHash && !dev.authed.has(ws)) {
-      sendJson(ws, { type: 'need_pin' });
-      return;
-    }
     sendJson(ws, { type: 'auth_ok' });
     if (dev.lastFrame && ws.readyState === WebSocket.OPEN) {
       try { ws.send(dev.lastFrame, { binary: true }); } catch (_) {}
     }
   };
 
-  tryJoin();
   const iv = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) {
       clearInterval(iv);
       return;
     }
     const dev = attach();
-    if (dev && !dev.viewers.has(ws)) tryJoin();
+    if (unlocked && dev && !dev.viewers.has(ws)) tryJoin();
   }, 1500);
 
   const cleanup = () => {
