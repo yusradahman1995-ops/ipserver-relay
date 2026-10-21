@@ -95,6 +95,12 @@ button.ghost{background:#263238}
 #btn_on{background:#00c853}
 #btn_off{background:#ff1744}
 .btns button:disabled{opacity:.35;cursor:default}
+.qbox{margin:0 0 16px;padding:12px;background:#10232a;border:2px solid #00bcd4;border-radius:16px}
+.qbox .qlabel{text-align:center;color:#80deea;font-weight:800;font-size:15px;margin-bottom:10px}
+.qs{display:flex;gap:8px}
+.qs button{flex:1;border:0;border-radius:14px;padding:12px 6px;font-size:14px;font-weight:800;background:#263238;color:#eee;cursor:pointer;line-height:1.25}
+.qs button small{display:block;font-weight:600;font-size:11px;opacity:.85;margin-top:2px}
+.qs button.on{background:#00bcd4;color:#00363a}
 .pin{margin:24px auto;max-width:280px;background:#1a1a2e;padding:20px;border-radius:16px;text-align:center}
 .pin input{width:100%;margin:12px 0;padding:10px;font-size:22px;text-align:center;border-radius:10px;border:1px solid #2a2a4a;background:#12122a;color:#eee;letter-spacing:4px}
 .pin button{width:100%;border:0;border-radius:28px;padding:14px;font-size:16px;font-weight:700;background:#00c853;color:#fff;cursor:pointer}
@@ -122,6 +128,14 @@ button.ghost{background:#263238}
   <button id="btn_on" type="button">تشغيل الكاميرا</button>
   <button id="btn_off" type="button" disabled>إيقاف الكاميرا</button>
 </div>
+<div class="qbox">
+  <div class="qlabel">الجودة</div>
+  <div class="qs">
+    <button type="button" data-q="low">منخفضة<small>360p</small></button>
+    <button type="button" data-q="medium" class="on">متوسطة<small>720p</small></button>
+    <button type="button" data-q="high">عالية<small>1080p</small></button>
+  </div>
+</div>
 <div class="stage" id="stage">
   <div class="wait" id="wait">اضغط تشغيل الكاميرا</div>
   <img id="v" alt="stream" style="display:none"/>
@@ -137,7 +151,7 @@ button.ghost{background:#263238}
   var ID=${JSON.stringify(safe)};
   var PASS=${JSON.stringify(VIEW_PASSWORD)};
   var img, fpsEl, dot, st, wait, btnOn, btnOff;
-  var frames=0, last=Date.now(), ws, live=false, unlocked=false, pw='';
+  var frames=0, last=Date.now(), ws, live=false, unlocked=false, pw='', qlevel='medium';
   function setButtons(){ if(!btnOn) return; btnOn.disabled=live; btnOff.disabled=!live; }
   function setOn(on, msg){
     if(!dot) return;
@@ -166,6 +180,7 @@ button.ghost{background:#263238}
     ws.onopen=function(){
       setOn(false,'متصل بالسرفر…');
       ws.send(JSON.stringify({type:'auth',password:pw}));
+      ws.send(JSON.stringify({type:'quality',q:qlevel}));
     };
     ws.onmessage=function(e){
       if(typeof e.data==='string'){
@@ -240,6 +255,15 @@ button.ghost{background:#263238}
     btnOff=document.getElementById('btn_off');
     btnOn.onclick=startCam;
     btnOff.onclick=stopCam;
+    var qb=document.querySelectorAll('[data-q]');
+    function markQ(lv){
+      qlevel=lv;
+      for(var i=0;i<qb.length;i++) qb[i].className=qb[i].getAttribute('data-q')===lv?'on':'';
+      if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'quality',q:lv})); }catch(e){}
+    }
+    for(var i=0;i<qb.length;i++) (function(btn){
+      btn.onclick=function(){ markQ(btn.getAttribute('data-q')); };
+    })(qb[i]);
     document.getElementById('fs').onclick=function(){
       var el=img;
       if(el.requestFullscreen) el.requestFullscreen();
@@ -349,7 +373,7 @@ const server = http.createServer((req, res) => {
     const finish = (count) => {
       if (done || res.writableEnded) return;
       done = true;
-      write(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, viewers: count }));
+      write(res, 200, 'application/json; charset=utf-8', jsonViewers(dev));
     };
     const t = setTimeout(() => finish(viewerCount(dev)), 25000);
     if (!dev.viewerWaiters) dev.viewerWaiters = [];
@@ -386,8 +410,7 @@ const server = http.createServer((req, res) => {
         try { applyHello(dev, JSON.parse(buf.toString('utf8'))); } catch (_) {}
         dev.lastSeen = Date.now();
         log('device hello http', id, dev.name || '', ip);
-        write(res, 200, 'application/json; charset=utf-8',
-            JSON.stringify({ ok: true, mode: 'http', viewers: viewerCount(dev) }));
+        write(res, 200, 'application/json; charset=utf-8', jsonViewers(dev));
         return;
       }
       if (buf.length >= 20) broadcastJpeg(dev, buf);
@@ -470,6 +493,7 @@ function ensureDevice(id) {
     lastSeen: Date.now(),
     authed: new Set(),
     viewerWaiters: [],
+    quality: 'medium',
   };
   devices.set(id, dev);
   return dev;
@@ -490,7 +514,20 @@ function viewerCount(dev) {
 }
 
 function jsonViewers(dev) {
-  return JSON.stringify({ ok: true, viewers: viewerCount(dev) });
+  return JSON.stringify({
+    ok: true,
+    viewers: viewerCount(dev),
+    quality: (dev && dev.quality) ? dev.quality : 'medium',
+  });
+}
+
+function applyQuality(dev, q) {
+  if (!dev) return;
+  if (q !== 'low' && q !== 'medium' && q !== 'high') return;
+  dev.quality = q;
+  if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+    sendJson(dev.ws, { type: 'quality', q: q });
+  }
 }
 
 function wakeViewers(dev) {
@@ -563,6 +600,7 @@ function onDevice(ws, id, ip) {
   ws.on('pong', () => { dev.lastSeen = Date.now(); });
   sendJson(ws, { type: 'ok' });
   sendJson(ws, { type: 'viewers', count: viewerCount(dev) });
+  if (dev.quality) sendJson(ws, { type: 'quality', q: dev.quality });
 }
 
 function onViewer(ws, id, ip) {
@@ -576,7 +614,14 @@ function onViewer(ws, id, ip) {
     if (isBinary) return;
     let j;
     try { j = JSON.parse(data.toString()); } catch (_) { return; }
-    if (!j || (j.type !== 'auth' && j.type !== 'password')) return;
+    if (!j) return;
+    if (j.type === 'quality') {
+      if (!unlocked) return;
+      const dev = attach();
+      applyQuality(dev, String(j.q || j.quality || ''));
+      return;
+    }
+    if (j.type !== 'auth' && j.type !== 'password') return;
     const pass = String(j.password || j.pin || '');
     if (pass === VIEW_PASSWORD) {
       unlocked = true;
