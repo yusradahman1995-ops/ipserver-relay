@@ -286,6 +286,54 @@ button.ghost{background:#263238}
 </html>`;
 }
 
+function openAppPage() {
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#0a0a0a"/>
+<title>دخول</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0a0a0a;color:#eee;font-family:system-ui,-apple-system,Segoe UI,sans-serif;min-height:100%}
+body{display:flex;align-items:center;justify-content:center;padding:24px;min-height:100vh}
+.card{width:100%;max-width:340px;background:#1a1a2e;border-radius:18px;padding:28px 22px;text-align:center}
+.sub{color:#9e9e9e;font-size:14px;margin-bottom:22px;line-height:1.7}
+a.btn{display:block;width:100%;border-radius:28px;padding:16px;font-size:18px;font-weight:800;background:#00c853;color:#fff;text-decoration:none}
+.hint{margin-top:16px;color:#80deea;font-size:12px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="sub">كروم لا يفتح التطبيق من شريط البحث. اضغط الزر الأخضر في هذه الصفحة.</div>
+  <a class="btn" id="go" href="intent://open#Intent;scheme=mofer;package=com.ipserver.remote;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end">دخول التطبيق</a>
+  <div class="hint">بعدها أدخل كلمة السر داخل التطبيق</div>
+</div>
+<script>
+(function(){
+  var u='intent://open#Intent;scheme=mofer;package=com.ipserver.remote;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end';
+  try { window.location.replace(u); } catch(e) {}
+  setTimeout(function(){ try { window.location.href=u; } catch(e) {} }, 400);
+})();
+</script>
+</body>
+</html>`;
+}
+
+function assetLinks() {
+  return JSON.stringify([{
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: {
+      namespace: 'android_app',
+      package_name: 'com.ipserver.remote',
+      sha256_cert_fingerprints: [
+        'EA:E0:62:43:9E:97:99:6B:FF:E0:3A:0D:30:F7:C8:2D:46:85:34:59:6C:36:D6:E7:0A:05:3A:EB:70:6E:DB:DB'
+      ]
+    }
+  }]);
+}
+
 function landingPage() {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -344,6 +392,14 @@ const server = http.createServer((req, res) => {
   }
   if (path === '/' || path === '/index.html') {
     write(res, 200, 'text/html; charset=utf-8', landingPage());
+    return;
+  }
+  if (path === '/app' || path === '/open') {
+    write(res, 200, 'text/html; charset=utf-8', openAppPage());
+    return;
+  }
+  if (path === '/.well-known/assetlinks.json') {
+    write(res, 200, 'application/json; charset=utf-8', assetLinks());
     return;
   }
   const m = path.match(/^\/watch\/([0-9A-Za-z]{8})\/?$/);
