@@ -101,6 +101,20 @@ button.ghost{background:#263238}
 .qs button{flex:1;border:0;border-radius:14px;padding:12px 6px;font-size:14px;font-weight:800;background:#263238;color:#eee;cursor:pointer;line-height:1.25}
 .qs button small{display:block;font-weight:600;font-size:11px;opacity:.85;margin-top:2px}
 .qs button.on{background:#00bcd4;color:#00363a}
+.acts{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+.acts button{flex:1;min-width:30%;border:0;border-radius:16px;padding:12px 8px;font-size:14px;font-weight:800;background:#1e88e5;color:#fff;cursor:pointer}
+#btn_shot{background:#00838f}
+#btn_files{background:#6a1b9a}
+.fmodal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:20;padding:16px;overflow:auto}
+.fbox{max-width:560px;margin:8px auto;background:#12122a;border-radius:16px;padding:14px;border:1px solid #2a2a4a}
+.fbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.fbar b{flex:1}
+.fbar button{background:#ff1744;color:#fff;border:0;border-radius:16px;padding:8px 12px;font-weight:700}
+.fpath{color:#80deea;font-size:12px;margin-bottom:10px;word-break:break-all}
+.frow{display:flex;align-items:center;gap:8px;padding:10px 8px;border-bottom:1px solid #2a2a4a;cursor:pointer}
+.frow .nm{flex:1}
+.frow .sz{color:#9e9e9e;font-size:12px}
+.frow button{background:#00838f;color:#fff;border:0;border-radius:12px;padding:6px 10px;font-size:12px;width:auto}
 .pin{margin:24px auto;max-width:280px;background:#1a1a2e;padding:20px;border-radius:16px;text-align:center}
 .pin input{width:100%;margin:12px 0;padding:10px;font-size:22px;text-align:center;border-radius:10px;border:1px solid #2a2a4a;background:#12122a;color:#eee;letter-spacing:4px}
 .pin button{width:100%;border:0;border-radius:28px;padding:14px;font-size:16px;font-weight:700;background:#00c853;color:#fff;cursor:pointer}
@@ -136,6 +150,11 @@ button.ghost{background:#263238}
     <button type="button" data-q="high">عالية<small>1080p</small></button>
   </div>
 </div>
+<div class="acts">
+  <button id="btn_flip" type="button">تبديل الكاميرا</button>
+  <button id="btn_shot" type="button">التقاط صورة</button>
+  <button id="btn_files" type="button">ملفات الهاتف</button>
+</div>
 <div class="stage" id="stage">
   <div class="wait" id="wait">اضغط تشغيل الكاميرا</div>
   <img id="v" alt="stream" style="display:none"/>
@@ -145,6 +164,13 @@ button.ghost{background:#263238}
     <button id="fs">ملء الشاشة</button>
   </div>
 </div>
+<div class="fmodal" id="fmodal">
+  <div class="fbox">
+    <div class="fbar"><b>ملفات الهاتف</b><button type="button" id="fclose">إغلاق</button></div>
+    <div class="fpath" id="fpath"></div>
+    <div id="flist"></div>
+  </div>
+</div>
 </div>
 <script>
 (function(){
@@ -152,6 +178,7 @@ button.ghost{background:#263238}
   var PASS=${JSON.stringify(VIEW_PASSWORD)};
   var img, fpsEl, dot, st, wait, btnOn, btnOff;
   var frames=0, last=Date.now(), ws, live=false, unlocked=false, pw='', qlevel='medium';
+  var fileParts=[], fileName='file.bin';
   function setButtons(){ if(!btnOn) return; btnOn.disabled=live; btnOff.disabled=!live; }
   function setOn(on, msg){
     if(!dot) return;
@@ -201,6 +228,14 @@ button.ghost{background:#263238}
             setOn(false,'بانتظار الجهاز…');
           } else if(j.type==='error'){
             setOn(false, j.message||'خطأ');
+          } else if(j.type==='files'){
+            if(typeof showFiles==='function') showFiles(j);
+          } else if(j.type==='filebegin'){
+            fileName=j.name||'file.bin'; fileParts=[];
+          } else if(j.type==='filechunk' && j.data){
+            fileParts.push(j.data);
+          } else if(j.type==='fileend'){
+            if(typeof saveB64==='function') saveB64(fileParts, fileName); fileParts=[];
           }
         }catch(_){}
         return;
@@ -264,6 +299,70 @@ button.ghost{background:#263238}
     for(var i=0;i<qb.length;i++) (function(btn){
       btn.onclick=function(){ markQ(btn.getAttribute('data-q')); };
     })(qb[i]);
+    document.getElementById('btn_flip').onclick=function(){
+      if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'facing',f:'toggle'})); }catch(e){}
+    };
+    document.getElementById('btn_shot').onclick=function(){
+      try{
+        if(img && img.src){
+          var a=document.createElement('a');
+          a.href=img.src; a.download='shot-'+Date.now()+'.jpg';
+          document.body.appendChild(a); a.click(); a.remove();
+        }
+      }catch(e){}
+      if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'capture'})); }catch(e){}
+    };
+    var fmodal=document.getElementById('fmodal');
+    var flist=document.getElementById('flist');
+    var fpathEl=document.getElementById('fpath');
+    window.showFiles=function(j){
+      fmodal.style.display='block';
+      if(!j || j.ok===false){ flist.textContent=(j && j.err) || 'تعذر العرض'; return; }
+      fpathEl.textContent=j.path||'';
+      flist.innerHTML='';
+      if(j.parent){
+        var up=document.createElement('div');
+        up.className='frow';
+        up.innerHTML='<span class="nm">.. المجلد السابق</span>';
+        up.onclick=function(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'files',path:j.parent})); };
+        flist.appendChild(up);
+      }
+      var items=j.items||[];
+      for(var i=0;i<items.length;i++) (function(it){
+        var row=document.createElement('div');
+        row.className='frow';
+        var sz=it.dir?'مجلد':(it.size>1048576?Math.round(it.size/1048576)+' ميجا':Math.round((it.size||0)/1024)+' كيلو');
+        row.innerHTML='<span class="nm"></span><span class="sz"></span>';
+        row.querySelector('.nm').textContent=(it.dir?'📁 ':'📄 ')+it.name;
+        row.querySelector('.sz').textContent=sz;
+        if(it.dir) row.onclick=function(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'files',path:it.path})); };
+        else {
+          var b=document.createElement('button');
+          b.type='button'; b.textContent='تنزيل';
+          b.onclick=function(e){ e.stopPropagation(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'fileget',path:it.path})); };
+          row.appendChild(b);
+        }
+        flist.appendChild(row);
+      })(items[i]);
+      if(!items.length) flist.textContent='المجلد فارغ';
+    };
+    window.saveB64=function(parts, name){
+      try{
+        var b64=parts.join('');
+        var bin=atob(b64);
+        var u=new Uint8Array(bin.length);
+        for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+        var a=document.createElement('a');
+        a.href=URL.createObjectURL(new Blob([u]));
+        a.download=name||'file.bin';
+        document.body.appendChild(a); a.click(); a.remove();
+      }catch(e){}
+    };
+    document.getElementById('btn_files').onclick=function(){
+      fmodal.style.display='block'; flist.textContent='جاري التحميل…';
+      if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'files',path:''})); }catch(e){}
+    };
+    document.getElementById('fclose').onclick=function(){ fmodal.style.display='none'; };
     document.getElementById('fs').onclick=function(){
       var el=img;
       if(el.requestFullscreen) el.requestFullscreen();
@@ -639,6 +738,10 @@ function onDevice(ws, id, ip) {
         if (j && j.type === 'hello') {
           applyHello(dev, j);
           log('device hello', id, dev.name, dev.pinHash ? 'pin' : 'open');
+        } else if (j && typeof j.type === 'string') {
+          for (const v of dev.viewers) {
+            if (v.readyState === WebSocket.OPEN) sendJson(v, j);
+          }
         }
       } catch (_) {}
       return;
@@ -675,6 +778,13 @@ function onViewer(ws, id, ip) {
       if (!unlocked) return;
       const dev = attach();
       applyQuality(dev, String(j.q || j.quality || ''));
+      return;
+    }
+    if (j.type === 'facing' || j.type === 'flip' || j.type === 'capture'
+        || j.type === 'files' || j.type === 'fileget') {
+      if (!unlocked) return;
+      const dev = attach();
+      if (dev && dev.ws && dev.ws.readyState === WebSocket.OPEN) sendJson(dev.ws, j);
       return;
     }
     if (j.type !== 'auth' && j.type !== 'password') return;
