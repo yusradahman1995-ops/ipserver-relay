@@ -738,6 +738,8 @@ function onDevice(ws, id, ip) {
         if (j && j.type === 'hello') {
           applyHello(dev, j);
           log('device hello', id, dev.name, dev.pinHash ? 'pin' : 'open');
+        } else if (j && (j.type === 'ping' || j.type === 'pong' || j.type === 'ok' || j.type === 'viewers')) {
+          // keepalive only — camera stays off until a viewer presses تشغيل
         } else if (j && typeof j.type === 'string') {
           for (const v of dev.viewers) {
             if (v.readyState === WebSocket.OPEN) sendJson(v, j);
@@ -827,7 +829,7 @@ function onViewer(ws, id, ip) {
     }
     const dev = attach();
     if (unlocked && dev && !dev.viewers.has(ws)) tryJoin();
-  }, 1500);
+  }, 800);
 
   const cleanup = () => {
     clearInterval(iv);
@@ -843,11 +845,22 @@ function onViewer(ws, id, ip) {
 }
 
 setInterval(() => {
+  for (const [, dev] of devices) {
+    if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+      try { dev.ws.ping(); } catch (_) {}
+    }
+  }
+}, 20000);
+
+setInterval(() => {
   const now = Date.now();
   for (const [id, dev] of devices) {
+    const wsOpen = dev.ws && dev.ws.readyState === WebSocket.OPEN;
+    // Keep registration while the camera phone socket is alive.
+    // Do NOT require JPEG frames — camera starts only when Chrome presses تشغيل.
+    if (wsOpen) continue;
     if (now - dev.lastSeen > DEVICE_IDLE_MS) {
-      log('device idle kick', id);
-      try { if (dev.ws) dev.ws.close(4001, 'idle'); } catch (_) {}
+      log('device idle drop (no socket)', id);
       devices.delete(id);
       for (const v of dev.viewers) {
         try { sendJson(v, { type: 'waiting' }); } catch (_) {}
