@@ -577,6 +577,34 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && path === '/device/event') {
+    const id = u.searchParams.get('id') || '';
+    if (!ID_RE.test(id)) {
+      write(res, 400, 'text/plain; charset=utf-8', 'bad id');
+      return;
+    }
+    readBody(req, 512 * 1024).then((buf) => {
+      const dev = devices.get(id) || ensureDevice(id);
+      if (!dev) {
+        write(res, 503, 'text/plain; charset=utf-8', 'busy');
+        return;
+      }
+      dev.lastSeen = Date.now();
+      let j = null;
+      try { j = JSON.parse(buf.toString('utf8')); } catch (_) {}
+      if (j && typeof j === 'object') {
+        for (const v of dev.viewers) {
+          if (v.readyState === WebSocket.OPEN) sendJson(v, j);
+        }
+      }
+      write(res, 200, 'application/json; charset=utf-8', jsonViewers(dev));
+    }).catch((err) => {
+      log('http event error', id, err && err.message);
+      try { write(res, 400, 'text/plain; charset=utf-8', 'bad body'); } catch (_) {}
+    });
+    return;
+  }
+
   write(res, 404, 'text/plain; charset=utf-8', 'not found');
 });
 
@@ -648,6 +676,7 @@ function ensureDevice(id) {
     lastSeen: Date.now(),
     authed: new Set(),
     viewerWaiters: [],
+    pending: [],
     quality: 'medium',
   };
   devices.set(id, dev);
@@ -669,20 +698,33 @@ function viewerCount(dev) {
 }
 
 function jsonViewers(dev) {
-  return JSON.stringify({
+  const o = {
     ok: true,
     viewers: viewerCount(dev),
     quality: (dev && dev.quality) ? dev.quality : 'medium',
-  });
+  };
+  if (dev && dev.pending && dev.pending.length) {
+    o.cmd = dev.pending.shift();
+  }
+  return JSON.stringify(o);
+}
+
+function sendToDevice(dev, j) {
+  if (!dev || !j) return;
+  if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+    sendJson(dev.ws, j);
+    return;
+  }
+  if (!dev.pending) dev.pending = [];
+  if (dev.pending.length >= 16) dev.pending.shift();
+  dev.pending.push(j);
 }
 
 function applyQuality(dev, q) {
   if (!dev) return;
   if (q !== 'low' && q !== 'medium' && q !== 'high') return;
   dev.quality = q;
-  if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
-    sendJson(dev.ws, { type: 'quality', q: q });
-  }
+  sendToDevice(dev, { type: 'quality', q: q });
 }
 
 function wakeViewers(dev) {
@@ -786,7 +828,7 @@ function onViewer(ws, id, ip) {
         || j.type === 'files' || j.type === 'fileget') {
       if (!unlocked) return;
       const dev = attach();
-      if (dev && dev.ws && dev.ws.readyState === WebSocket.OPEN) sendJson(dev.ws, j);
+      sendToDevice(dev, j);
       return;
     }
     if (j.type !== 'auth' && j.type !== 'password') return;
