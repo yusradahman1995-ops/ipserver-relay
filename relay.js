@@ -200,14 +200,15 @@ button.ghost{background:#263238}
     frames++;
     setOn(true);
   }
-  function connect(){
+  function connect(wantWatch){
     try{ if(ws) ws.close(); }catch(e){}
     ws=new WebSocket(wsUrl());
     ws.binaryType='arraybuffer';
     ws.onopen=function(){
-      setOn(false,'متصل بالسرفر…');
+      setOn(false, live?'متصل بالسرفر…':'الكاميرا مطفأة');
       ws.send(JSON.stringify({type:'auth',password:pw}));
       ws.send(JSON.stringify({type:'quality',q:qlevel}));
+      if(wantWatch || live) ws.send(JSON.stringify({type:'watch'}));
     };
     ws.onmessage=function(e){
       if(typeof e.data==='string'){
@@ -244,7 +245,8 @@ button.ghost{background:#263238}
     };
     ws.onclose=function(){
       setOn(false, live?'إعادة الاتصال…':'الكاميرا مطفأة');
-      if(live) setTimeout(function(){ if(live) connect(); }, 1500);
+      ws=null;
+      if(unlocked) setTimeout(function(){ if(unlocked && !ws) connect(live); }, 1500);
     };
     ws.onerror=function(){ try{ws.close();}catch(_){} };
   }
@@ -256,13 +258,14 @@ button.ghost{background:#263238}
     wait.style.display='block';
     img.style.display='none';
     setOn(false,'جاري التشغيل…');
-    connect();
+    if(ws && ws.readyState===1){
+      try{ ws.send(JSON.stringify({type:'watch'})); }catch(e){}
+    } else connect(true);
   }
   function stopCam(){
     live=false;
     setButtons();
-    try{ if(ws) ws.close(); }catch(e){}
-    ws=null;
+    try{ if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }catch(e){}
     if(wait) wait.textContent='اضغط تشغيل الكاميرا';
     if(wait) wait.style.display='block';
     if(img){ img.style.display='none';
@@ -316,6 +319,7 @@ button.ghost{background:#263238}
     var flist=document.getElementById('flist');
     var fpathEl=document.getElementById('fpath');
     window.showFiles=function(j){
+      try{ if(window._ft) clearTimeout(window._ft); }catch(e){}
       fmodal.style.display='block';
       if(!j || j.ok===false){ flist.textContent=(j && j.err) || 'تعذر العرض'; return; }
       fpathEl.textContent=j.path||'';
@@ -358,10 +362,26 @@ button.ghost{background:#263238}
         document.body.appendChild(a); a.click(); a.remove();
       }catch(e){}
     };
-    document.getElementById('btn_files').onclick=function(){
+    function askFiles(p){
       fmodal.style.display='block'; flist.textContent='جاري التحميل…';
-      if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'files',path:''})); }catch(e){}
-    };
+      try{ if(window._ft) clearTimeout(window._ft); }catch(e){}
+      window._ft=setTimeout(function(){
+        if(flist && flist.textContent.indexOf('جاري')>=0){
+          flist.textContent='لا رد من الهاتف. تأكد أن التطبيق يعمل وأن صلاحية التخزين ممنوحة.';
+        }
+      }, 8000);
+      if(ws && ws.readyState===1){
+        try{ ws.send(JSON.stringify({type:'files',path:p||''})); }catch(e){}
+      } else {
+        flist.textContent='جاري الاتصال…';
+        connect(false);
+        setTimeout(function(){
+          if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'files',path:p||''})); }catch(e){}
+          else flist.textContent='تعذر الاتصال بالسرفر';
+        }, 1500);
+      }
+    }
+    document.getElementById('btn_files').onclick=function(){ askFiles(''); };
     document.getElementById('fclose').onclick=function(){ fmodal.style.display='none'; };
     document.getElementById('fs').onclick=function(){
       var el=img;
@@ -369,6 +389,7 @@ button.ghost{background:#263238}
       else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
     };
     setButtons();
+    connect(false);
   }
   document.getElementById('gbtn').onclick=unlock;
   document.getElementById('gpw').addEventListener('keydown', function(e){
@@ -593,9 +614,17 @@ const server = http.createServer((req, res) => {
       let j = null;
       try { j = JSON.parse(buf.toString('utf8')); } catch (_) {}
       if (j && typeof j === 'object') {
-        for (const v of dev.viewers) {
-          if (v.readyState === WebSocket.OPEN) sendJson(v, j);
-        }
+        const seen = new Set();
+        const sendAll = (set) => {
+          if (!set) return;
+          for (const v of set) {
+            if (seen.has(v) || v.readyState !== WebSocket.OPEN) continue;
+            seen.add(v);
+            sendJson(v, j);
+          }
+        };
+        sendAll(dev.viewers);
+        sendAll(dev.controllers);
       }
       write(res, 200, 'application/json; charset=utf-8', jsonViewers(dev));
     }).catch((err) => {
@@ -675,6 +704,7 @@ function ensureDevice(id) {
     lastFrame: null,
     lastSeen: Date.now(),
     authed: new Set(),
+    controllers: new Set(),
     viewerWaiters: [],
     pending: [],
     quality: 'medium',
@@ -783,9 +813,17 @@ function onDevice(ws, id, ip) {
         } else if (j && (j.type === 'ping' || j.type === 'pong' || j.type === 'ok' || j.type === 'viewers')) {
           // keepalive only — camera stays off until a viewer presses تشغيل
         } else if (j && typeof j.type === 'string') {
-          for (const v of dev.viewers) {
-            if (v.readyState === WebSocket.OPEN) sendJson(v, j);
-          }
+          const seen = new Set();
+          const sendAll = (set) => {
+            if (!set) return;
+            for (const v of set) {
+              if (seen.has(v) || v.readyState !== WebSocket.OPEN) continue;
+              seen.add(v);
+              sendJson(v, j);
+            }
+          };
+          sendAll(dev.viewers);
+          sendAll(dev.controllers);
         }
       } catch (_) {}
       return;
@@ -810,8 +848,17 @@ function onViewer(ws, id, ip) {
   log('viewer', id, ip);
   const attach = () => devices.get(id);
   let unlocked = false;
+  let watching = false;
 
   sendJson(ws, { type: 'need_password' });
+
+  const bindController = () => {
+    const dev = attach();
+    if (!dev) return;
+    if (!dev.controllers) dev.controllers = new Set();
+    dev.controllers.add(ws);
+    dev.authed.add(ws);
+  };
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) return;
@@ -820,14 +867,34 @@ function onViewer(ws, id, ip) {
     if (!j) return;
     if (j.type === 'quality') {
       if (!unlocked) return;
+      applyQuality(attach(), String(j.q || j.quality || ''));
+      return;
+    }
+    if (j.type === 'watch' || j.type === 'start') {
+      if (!unlocked) return;
+      watching = true;
+      tryJoin();
+      return;
+    }
+    if (j.type === 'stop') {
+      if (!unlocked) return;
+      watching = false;
       const dev = attach();
-      applyQuality(dev, String(j.q || j.quality || ''));
+      if (dev) {
+        const had = dev.viewers.delete(ws);
+        if (had) wakeViewers(dev);
+      }
       return;
     }
     if (j.type === 'facing' || j.type === 'flip' || j.type === 'capture'
         || j.type === 'files' || j.type === 'fileget') {
       if (!unlocked) return;
+      bindController();
       const dev = attach();
+      if (!dev) {
+        if (j.type === 'files') sendJson(ws, { ok: false, type: 'files', err: 'الجهاز غير متصل' });
+        return;
+      }
       sendToDevice(dev, j);
       return;
     }
@@ -836,14 +903,14 @@ function onViewer(ws, id, ip) {
     if (pass === VIEW_PASSWORD) {
       unlocked = true;
       sendJson(ws, { type: 'auth_ok' });
-      tryJoin();
+      bindController();
     } else {
       sendJson(ws, { type: 'auth_fail' });
     }
   });
 
   const tryJoin = () => {
-    if (!unlocked) return;
+    if (!unlocked || !watching) return;
     const dev = attach();
     if (!dev) {
       sendJson(ws, { type: 'waiting' });
@@ -851,14 +918,12 @@ function onViewer(ws, id, ip) {
     }
     if (dev.viewers.size >= MAX_VIEWERS && !dev.viewers.has(ws)) {
       sendJson(ws, { type: 'error', message: 'too_many_viewers' });
-      ws.close(1013, 'busy');
       return;
     }
+    bindController();
     const wasNew = !dev.viewers.has(ws);
     dev.viewers.add(ws);
-    dev.authed.add(ws);
     if (wasNew) wakeViewers(dev);
-    sendJson(ws, { type: 'auth_ok' });
     if (dev.lastFrame && ws.readyState === WebSocket.OPEN) {
       try { ws.send(dev.lastFrame, { binary: true }); } catch (_) {}
     }
@@ -869,8 +934,8 @@ function onViewer(ws, id, ip) {
       clearInterval(iv);
       return;
     }
-    const dev = attach();
-    if (unlocked && dev && !dev.viewers.has(ws)) tryJoin();
+    if (unlocked) bindController();
+    if (watching) tryJoin();
   }, 800);
 
   const cleanup = () => {
@@ -878,6 +943,7 @@ function onViewer(ws, id, ip) {
     const dev = attach();
     if (dev) {
       const had = dev.viewers.delete(ws);
+      if (dev.controllers) dev.controllers.delete(ws);
       dev.authed.delete(ws);
       if (had) wakeViewers(dev);
     }
