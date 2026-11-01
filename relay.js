@@ -925,7 +925,13 @@ function onDevice(ws, id, ip) {
     return;
   }
   const prev = devices.get(id);
-  if (prev && prev.ws && prev.ws !== ws) {
+  if (prev && prev.ws && prev.ws !== ws && prev.ws.readyState === WebSocket.OPEN) {
+    const age = Date.now() - (prev.lastSeen || 0);
+    if (age < 15000) {
+      log('device extra dropped', id, age);
+      try { ws.close(4001, 'already'); } catch (_) {}
+      return;
+    }
     try { prev.ws.close(4000, 'replaced'); } catch (_) {}
   }
   const dev = ensureDevice(id);
@@ -969,12 +975,14 @@ function onDevice(ws, id, ip) {
     broadcastJpeg(dev, buf);
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     if (dev.ws === ws) dev.ws = null;
-    log('device disconnect', id);
-    notifyMonitors({ type: 'event', event: 'disconnect', id, name: dev.name || '' });
+    log('device disconnect', id, code, String(reason || ''));
+    notifyMonitors({ type: 'event', event: 'disconnect', id, name: dev.name || '', code: code });
   });
-  ws.on('error', () => {});
+  ws.on('error', (err) => {
+    log('device error', id, err && err.message);
+  });
   ws.on('ping', () => { dev.lastSeen = Date.now(); });
   ws.on('pong', () => { dev.lastSeen = Date.now(); });
   sendJson(ws, { type: 'ok' });
