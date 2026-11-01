@@ -28,6 +28,9 @@ const ID_RE = /^[0-9A-Za-z]{8}$/;
 /** @type {Map<string, Device>} */
 const devices = new Map();
 
+/** @type {Set<import('ws').WebSocket>} */
+const monitors = new Set();
+
 /** ip -> { t, n } */
 const hits = new Map();
 
@@ -729,6 +732,11 @@ server.on('upgrade', (req, socket, head) => {
   }
   const path = u.pathname;
 
+  if (path === '/monitor/ws') {
+    wss.handleUpgrade(req, socket, head, (ws) => onMonitor(ws, ip));
+    return;
+  }
+
   if (path === '/device/ws') {
     const id = u.searchParams.get('id') || '';
     if (!ID_RE.test(id)) {
@@ -815,6 +823,54 @@ function jsonViewers(dev) {
   return JSON.stringify(o);
 }
 
+function snapshotDevices() {
+  const list = [];
+  for (const [id, dev] of devices) {
+    list.push({
+      id,
+      name: dev.name || '',
+      connected: !!(dev.ws && dev.ws.readyState === WebSocket.OPEN),
+    });
+  }
+  return list;
+}
+
+function notifyMonitors(obj) {
+  if (!obj) return;
+  for (const ws of monitors) {
+    if (ws.readyState === WebSocket.OPEN) sendJson(ws, obj);
+    else monitors.delete(ws);
+  }
+}
+
+function onMonitor(ws, ip) {
+  let authed = false;
+  sendJson(ws, { type: 'need_password' });
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    let j;
+    try { j = JSON.parse(data.toString()); } catch (_) { return; }
+    if (!j) return;
+    if (j.type === 'ping') {
+      if (authed) sendJson(ws, { type: 'pong' });
+      return;
+    }
+    if (j.type !== 'auth' && j.type !== 'password') return;
+    const pass = String(j.password || j.pin || '');
+    if (pass === VIEW_PASSWORD) {
+      authed = true;
+      monitors.add(ws);
+      sendJson(ws, { type: 'auth_ok', devices: snapshotDevices() });
+      log('monitor join', ip);
+    } else {
+      sendJson(ws, { type: 'auth_fail' });
+    }
+  });
+  const gone = () => { monitors.delete(ws); };
+  ws.on('close', gone);
+  ws.on('error', gone);
+}
+
 function sendToDevice(dev, j) {
   if (!dev || !j) return false;
   if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
@@ -881,6 +937,7 @@ function onDevice(ws, id, ip) {
   dev.ws = ws;
   dev.lastSeen = Date.now();
   log('device connect', id, ip);
+  notifyMonitors({ type: 'event', event: 'connect', id, name: dev.name || '', ip });
 
   ws.on('message', (data, isBinary) => {
     dev.lastSeen = Date.now();
@@ -915,6 +972,7 @@ function onDevice(ws, id, ip) {
   ws.on('close', () => {
     if (dev.ws === ws) dev.ws = null;
     log('device disconnect', id);
+    notifyMonitors({ type: 'event', event: 'disconnect', id, name: dev.name || '' });
   });
   ws.on('error', () => {});
   ws.on('ping', () => { dev.lastSeen = Date.now(); });
