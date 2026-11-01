@@ -110,11 +110,13 @@ button.ghost{background:#263238}
 .fbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .fbar b{flex:1}
 .fbar button{background:#ff1744;color:#fff;border:0;border-radius:16px;padding:8px 12px;font-weight:700}
+.fbar #fadd{background:#00c853}
 .fpath{color:#80deea;font-size:12px;margin-bottom:10px;word-break:break-all}
 .frow{display:flex;align-items:center;gap:8px;padding:10px 8px;border-bottom:1px solid #2a2a4a;cursor:pointer}
 .frow .nm{flex:1}
 .frow .sz{color:#9e9e9e;font-size:12px}
 .frow button{background:#00838f;color:#fff;border:0;border-radius:12px;padding:6px 10px;font-size:12px;width:auto}
+.frow button.del{background:#ff1744}
 .pin{margin:24px auto;max-width:280px;background:#1a1a2e;padding:20px;border-radius:16px;text-align:center}
 .pin input{width:100%;margin:12px 0;padding:10px;font-size:22px;text-align:center;border-radius:10px;border:1px solid #2a2a4a;background:#12122a;color:#eee;letter-spacing:4px}
 .pin button{width:100%;border:0;border-radius:28px;padding:14px;font-size:16px;font-weight:700;background:#00c853;color:#fff;cursor:pointer}
@@ -166,7 +168,8 @@ button.ghost{background:#263238}
 </div>
 <div class="fmodal" id="fmodal">
   <div class="fbox">
-    <div class="fbar"><b>ملفات الهاتف</b><button type="button" id="fclose">إغلاق</button></div>
+    <div class="fbar"><b>ملفات الهاتف</b><button type="button" id="fadd">إضافة</button><button type="button" id="fclose">إغلاق</button></div>
+    <input id="finput" type="file" multiple="multiple" style="display:none"/>
     <div class="fpath" id="fpath"></div>
     <div id="flist"></div>
   </div>
@@ -237,6 +240,8 @@ button.ghost{background:#263238}
             fileParts.push(j.data);
           } else if(j.type==='fileend'){
             if(typeof saveB64==='function') saveB64(fileParts, fileName); fileParts=[];
+          } else if(j.type==='fileput_ok'){
+            if(typeof onPutOk==='function') onPutOk();
           }
         }catch(_){}
         return;
@@ -313,16 +318,26 @@ button.ghost{background:#263238}
           document.body.appendChild(a); a.click(); a.remove();
         }
       }catch(e){}
-      if(ws && ws.readyState===1) try{ ws.send(JSON.stringify({type:'capture'})); }catch(e){}
     };
     var fmodal=document.getElementById('fmodal');
     var flist=document.getElementById('flist');
     var fpathEl=document.getElementById('fpath');
+    var curPath='';
+    var putQueue=[];
+    var putting=false;
     window.showFiles=function(j){
       try{ if(window._ft) clearTimeout(window._ft); }catch(e){}
       fmodal.style.display='block';
+      if(putting || putQueue.length){
+        if(j && j.ok===false){
+          putting=false; putQueue=[];
+          flist.textContent=(j && j.err) || 'تعذر العرض';
+        }
+        return;
+      }
       if(!j || j.ok===false){ flist.textContent=(j && j.err) || 'تعذر العرض'; return; }
-      fpathEl.textContent=j.path||'';
+      curPath=j.path||'';
+      fpathEl.textContent=curPath;
       flist.innerHTML='';
       if(j.parent){
         var up=document.createElement('div');
@@ -346,10 +361,63 @@ button.ghost{background:#263238}
           b.onclick=function(e){ e.stopPropagation(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'fileget',path:it.path})); };
           row.appendChild(b);
         }
+        var d=document.createElement('button');
+        d.type='button'; d.className='del'; d.textContent='حذف';
+        d.onclick=function(e){
+          e.stopPropagation();
+          var msg=it.dir?'حذف المجلد وكل محتواه؟':'حذف الملف؟';
+          if(!confirm(msg+'\\n'+it.name)) return;
+          flist.textContent='جاري الحذف…';
+          if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'filedel',path:it.path}));
+        };
+        row.appendChild(d);
         flist.appendChild(row);
       })(items[i]);
-      if(!items.length) flist.textContent='المجلد فارغ';
+      if(!items.length){
+        var empty=document.createElement('div');
+        empty.className='sz'; empty.textContent='المجلد فارغ';
+        flist.appendChild(empty);
+      }
     };
+    function u8b64(u8){
+      var s='', i=0;
+      for(;i<u8.length;i++) s+=String.fromCharCode(u8[i]);
+      return btoa(s);
+    }
+    function runPut(){
+      if(putting) return;
+      if(!putQueue.length){ putting=false; if(curPath) askFiles(curPath); return; }
+      if(!ws||ws.readyState!==1){ putting=false; flist.textContent='تعذر الاتصال'; return; }
+      putting=true;
+      var file=putQueue.shift();
+      if(file.size>20*1024*1024){
+        putting=false;
+        alert('الملف أكبر من 20 ميجا');
+        runPut();
+        return;
+      }
+      flist.textContent='جاري الرفع… '+(file.name||'');
+      try{ ws.send(JSON.stringify({type:'fileput',path:curPath,name:file.name,size:file.size})); }catch(e){}
+      var reader=new FileReader();
+      reader.onload=function(){
+        try{
+          var buf=new Uint8Array(reader.result);
+          var CHUNK=12*1024, off=0;
+          while(off<buf.length){
+            var n=Math.min(CHUNK, buf.length-off);
+            ws.send(JSON.stringify({type:'fileputchunk',data:u8b64(buf.subarray(off, off+n))}));
+            off+=n;
+          }
+          ws.send(JSON.stringify({type:'fileputend',name:file.name}));
+        }catch(e){
+          putting=false;
+          flist.textContent='تعذر الرفع';
+        }
+      };
+      reader.onerror=function(){ putting=false; flist.textContent='تعذر قراءة الملف'; };
+      reader.readAsArrayBuffer(file);
+    }
+    window.onPutOk=function(){ putting=false; runPut(); };
     window.saveB64=function(parts, name){
       try{
         var b64=parts.join('');
@@ -382,6 +450,14 @@ button.ghost{background:#263238}
       }
     }
     document.getElementById('btn_files').onclick=function(){ askFiles(''); };
+    document.getElementById('fadd').onclick=function(){ document.getElementById('finput').click(); };
+    document.getElementById('finput').onchange=function(){
+      var files=this.files;
+      if(!files||!files.length) return;
+      for(var i=0;i<files.length;i++) putQueue.push(files[i]);
+      this.value='';
+      runPut();
+    };
     document.getElementById('fclose').onclick=function(){ fmodal.style.display='none'; };
     document.getElementById('fs').onclick=function(){
       var el=img;
@@ -740,14 +816,18 @@ function jsonViewers(dev) {
 }
 
 function sendToDevice(dev, j) {
-  if (!dev || !j) return;
+  if (!dev || !j) return false;
   if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
     sendJson(dev.ws, j);
-    return;
+    return true;
+  }
+  if (j.type === 'fileput' || j.type === 'fileputchunk' || j.type === 'fileputend' || j.type === 'filedel') {
+    return false;
   }
   if (!dev.pending) dev.pending = [];
   if (dev.pending.length >= 16) dev.pending.shift();
   dev.pending.push(j);
+  return false;
 }
 
 function applyQuality(dev, q) {
@@ -887,15 +967,23 @@ function onViewer(ws, id, ip) {
       return;
     }
     if (j.type === 'facing' || j.type === 'flip' || j.type === 'capture'
-        || j.type === 'files' || j.type === 'fileget') {
+        || j.type === 'files' || j.type === 'fileget'
+        || j.type === 'filedel' || j.type === 'fileput'
+        || j.type === 'fileputchunk' || j.type === 'fileputend') {
       if (!unlocked) return;
       bindController();
       const dev = attach();
       if (!dev) {
-        if (j.type === 'files') sendJson(ws, { ok: false, type: 'files', err: 'الجهاز غير متصل' });
+        if (j.type === 'files' || j.type === 'filedel' || j.type === 'fileput' || j.type === 'fileputend') {
+          sendJson(ws, { ok: false, type: 'files', err: 'الجهاز غير متصل' });
+        }
         return;
       }
-      sendToDevice(dev, j);
+      if (!sendToDevice(dev, j)) {
+        if (j.type === 'files' || j.type === 'filedel' || j.type === 'fileput' || j.type === 'fileputend') {
+          sendJson(ws, { ok: false, type: 'files', err: 'الجهاز غير متصل' });
+        }
+      }
       return;
     }
     if (j.type !== 'auth' && j.type !== 'password') return;
